@@ -1,0 +1,15 @@
+[project]
+name = "comfyui-api-upload"
+version = "0.1.0"
+description = "ComfyUI custom node for uploading images to xsession vault"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.25.0",
+    "torch>=1.9.0",
+    "Pillow>=8.0.0",
+    "numpy>=1.24.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/mervent/comfyui-api-upload"
+Repository = "https://github.com/mervent/comfyui-api-upload"
