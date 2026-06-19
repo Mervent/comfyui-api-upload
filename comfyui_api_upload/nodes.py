@@ -6,10 +6,10 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Tuple
 
+import cv2
 import numpy as np
 import requests
 import torch
-from PIL import Image
 from torch import Tensor
 
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="xsession-upload")
@@ -59,21 +59,44 @@ class APIUpload:
         if not tensors:
             return (0,)
 
-        files = []
-        for tensor in tensors:
-            buf = self._tensor_to_png(tensor)
-            fname = f"{uuid.uuid4().hex[:12]}.png"
-            files.append(("files", (fname, buf, "image/png")))
-
         url = f"{host.rstrip('/')}/api/collections/by-name/{collection}/upload/"
         headers = {"Authorization": f"Bearer {api_key}"}
 
         if use_async:
-            count = len(files)
-            _executor.submit(self._do_upload, url, headers, files)
-            return (count,)
+            arrays = [self._tensor_to_array(t) for t in tensors]
+            _executor.submit(self._encode_and_upload, url, headers, arrays)
+            return (len(tensors),)
 
+        files = self._encode_arrays([self._tensor_to_array(t) for t in tensors])
         return (self._do_upload(url, headers, files),)
+
+    def _tensor_to_array(self, t: Tensor) -> np.ndarray:
+        if t.ndim == 4:
+            t = t.squeeze(0)
+        u8 = t.mul(255).clamp_(0, 255).to(torch.uint8)
+        if u8.shape[0] not in (1, 3):
+            u8 = u8.permute(2, 0, 1).contiguous()
+        h = torch.empty_like(u8, device="cpu", pin_memory=True)
+        h.copy_(u8, non_blocking=True)
+        return h.permute(1, 2, 0).contiguous().numpy()
+
+    def _encode_arrays(self, arrays: List[np.ndarray]) -> list:
+        files = []
+        for arr in arrays:
+            ok, enc = cv2.imencode(".png", arr[..., ::-1], [cv2.IMWRITE_PNG_COMPRESSION, 2])
+            if not ok:
+                raise RuntimeError("cv2.imencode failed")
+            buf = io.BytesIO(enc.tobytes())
+            buf.seek(0)
+            fname = f"{uuid.uuid4().hex[:12]}.png"
+            files.append(("files", (fname, buf, "image/png")))
+        return files
+
+    def _encode_and_upload(
+        self, url: str, headers: Dict[str, str], arrays: List[np.ndarray]
+    ) -> int:
+        files = self._encode_arrays(arrays)
+        return self._do_upload(url, headers, files)
 
     def _do_upload(
         self,
