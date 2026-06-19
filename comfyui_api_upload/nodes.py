@@ -34,6 +34,10 @@ class APIUpload:
                     "BOOLEAN",
                     {"default": True, "forceInput": False},
                 ),
+                "keep_order": (
+                    "BOOLEAN",
+                    {"default": True, "forceInput": False},
+                ),
             },
         }
 
@@ -54,6 +58,7 @@ class APIUpload:
         image_4: Optional[List[Tensor]] = None,
         image_5: Optional[List[Tensor]] = None,
         use_async: bool = True,
+        keep_order: bool = True,
     ) -> Tuple[int]:
         tensors = [t for batch in (image_1, image_2, image_3, image_4, image_5) if batch is not None for t in batch]
         if not tensors:
@@ -64,10 +69,13 @@ class APIUpload:
 
         if use_async:
             arrays = [self._tensor_to_array(t) for t in tensors]
-            _executor.submit(self._encode_and_upload, url, headers, arrays)
+            _executor.submit(self._encode_and_upload, url, headers, arrays, keep_order)
             return (len(tensors),)
 
-        files = self._encode_arrays([self._tensor_to_array(t) for t in tensors])
+        arrays = [self._tensor_to_array(t) for t in tensors]
+        if keep_order:
+            return (self._upload_sequential(url, headers, arrays),)
+        files = self._encode_arrays(arrays)
         return (self._do_upload(url, headers, files),)
 
     def _tensor_to_array(self, t: Tensor) -> np.ndarray:
@@ -92,9 +100,21 @@ class APIUpload:
             files.append(("files", (fname, buf, "image/png")))
         return files
 
-    def _encode_and_upload(
+    def _upload_sequential(
         self, url: str, headers: Dict[str, str], arrays: List[np.ndarray]
     ) -> int:
+        count = 0
+        for arr in arrays:
+            files = self._encode_arrays([arr])
+            count += self._do_upload(url, headers, files)
+        return count
+
+    def _encode_and_upload(
+        self, url: str, headers: Dict[str, str], arrays: List[np.ndarray],
+        keep_order: bool = False,
+    ) -> int:
+        if keep_order:
+            return self._upload_sequential(url, headers, arrays)
         files = self._encode_arrays(arrays)
         return self._do_upload(url, headers, files)
 
