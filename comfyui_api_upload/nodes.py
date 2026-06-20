@@ -13,6 +13,7 @@ import torch
 from torch import Tensor
 
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="xsession-upload")
+_ordered_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="xsession-upload-seq")
 
 
 class APIUpload:
@@ -30,6 +31,7 @@ class APIUpload:
                 "image_3": ("IMAGE",),
                 "image_4": ("IMAGE",),
                 "image_5": ("IMAGE",),
+                "model_name": ("STRING", {"default": ""}),
                 "use_async": (
                     "BOOLEAN",
                     {"default": True, "forceInput": False},
@@ -57,6 +59,7 @@ class APIUpload:
         image_3: Optional[List[Tensor]] = None,
         image_4: Optional[List[Tensor]] = None,
         image_5: Optional[List[Tensor]] = None,
+        model_name: str = "",
         use_async: bool = True,
         keep_order: bool = True,
     ) -> Tuple[int]:
@@ -66,17 +69,19 @@ class APIUpload:
 
         url = f"{host.rstrip('/')}/api/collections/by-name/{collection}/upload/"
         headers = {"Authorization": f"Bearer {api_key}"}
+        form_data = {"model_name": model_name} if model_name else {}
 
         if use_async:
             arrays = [self._tensor_to_array(t) for t in tensors]
-            _executor.submit(self._encode_and_upload, url, headers, arrays, keep_order)
+            pool = _ordered_executor if keep_order else _executor
+            pool.submit(self._encode_and_upload, url, headers, arrays, keep_order, form_data)
             return (len(tensors),)
 
         arrays = [self._tensor_to_array(t) for t in tensors]
         if keep_order:
-            return (self._upload_sequential(url, headers, arrays),)
+            return (self._upload_sequential(url, headers, arrays, form_data),)
         files = self._encode_arrays(arrays)
-        return (self._do_upload(url, headers, files),)
+        return (self._do_upload(url, headers, files, form_data),)
 
     def _tensor_to_array(self, t: Tensor) -> np.ndarray:
         if t.ndim == 4:
@@ -101,30 +106,33 @@ class APIUpload:
         return files
 
     def _upload_sequential(
-        self, url: str, headers: Dict[str, str], arrays: List[np.ndarray]
+        self, url: str, headers: Dict[str, str], arrays: List[np.ndarray],
+        form_data: Optional[Dict[str, str]] = None,
     ) -> int:
         count = 0
         for arr in arrays:
             files = self._encode_arrays([arr])
-            count += self._do_upload(url, headers, files)
+            count += self._do_upload(url, headers, files, form_data)
         return count
 
     def _encode_and_upload(
         self, url: str, headers: Dict[str, str], arrays: List[np.ndarray],
         keep_order: bool = False,
+        form_data: Optional[Dict[str, str]] = None,
     ) -> int:
         if keep_order:
-            return self._upload_sequential(url, headers, arrays)
+            return self._upload_sequential(url, headers, arrays, form_data)
         files = self._encode_arrays(arrays)
-        return self._do_upload(url, headers, files)
+        return self._do_upload(url, headers, files, form_data)
 
     def _do_upload(
         self,
         url: str,
         headers: Dict[str, str],
         files: list,
+        form_data: Optional[Dict[str, str]] = None,
     ) -> int:
-        resp = requests.post(url, headers=headers, files=files, timeout=120)
+        resp = requests.post(url, headers=headers, files=files, data=form_data or {}, timeout=120)
         resp.raise_for_status()
         return len(resp.json())
 
