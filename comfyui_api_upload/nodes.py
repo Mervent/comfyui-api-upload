@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import io
+import logging
+import random
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -11,6 +13,8 @@ import numpy as np
 import requests
 import torch
 from torch import Tensor
+
+log = logging.getLogger(__name__)
 
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="xsession-upload")
 _ordered_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="xsession-upload-seq")
@@ -132,9 +136,30 @@ class APIUpload:
         files: list,
         form_data: Optional[Dict[str, str]] = None,
     ) -> int:
-        resp = requests.post(url, headers=headers, files=files, data=form_data or {}, timeout=120)
-        resp.raise_for_status()
-        return len(resp.json())
+        base_delay = 1.0
+        max_delay = 60.0
+        attempt = 0
+
+        while True:
+            attempt += 1
+            try:
+                for _, (_, buf, _) in files:
+                    buf.seek(0)
+                resp = requests.post(url, headers=headers, files=files, data=form_data or {}, timeout=120)
+                resp.raise_for_status()
+                if attempt > 1:
+                    log.info("Upload succeeded on attempt %d", attempt)
+                return len(resp.json())
+            except requests.exceptions.HTTPError as exc:
+                if exc.response is not None and 400 <= exc.response.status_code < 500:
+                    raise
+                delay = min(base_delay * (2 ** (attempt - 1)), max_delay) + random.uniform(0, 1)
+                log.warning("Upload attempt %d failed (%s), retrying in %.1fs", attempt, exc, delay)
+                time.sleep(delay)
+            except requests.exceptions.RequestException as exc:
+                delay = min(base_delay * (2 ** (attempt - 1)), max_delay) + random.uniform(0, 1)
+                log.warning("Upload attempt %d failed (%s), retrying in %.1fs", attempt, exc, delay)
+                time.sleep(delay)
 
     def _tensor_to_png(self, t: Tensor) -> io.BytesIO:
         if t.ndim == 4:
