@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 import random
 import time
 import uuid
@@ -21,7 +22,7 @@ _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="api-upload")
 _ordered_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="api-upload-seq")
 
 
-class APIUpload:
+class UploadImage:
     @classmethod
     def INPUT_TYPES(cls) -> Dict[str, Any]:
         return {
@@ -225,6 +226,92 @@ class DownloadImage:
                 delay = min(base_delay * (2 ** (attempt - 1)), max_delay) + random.uniform(0, 1)
                 log.warning("video-render fetch attempt %d failed (%s), retrying in %.1fs", attempt, exc, delay)
                 time.sleep(delay)
+
+    @classmethod
+    def IS_CHANGED(cls, *_: Any, **__: Any) -> float:
+        return time.time()
+
+
+_VIDEO_CONTENT_TYPES = {"mp4": "video/mp4", "gif": "image/gif"}
+
+
+class UploadVideo(UploadImage):
+    @classmethod
+    def INPUT_TYPES(cls) -> Dict[str, Any]:
+        return {
+            "required": {
+                "host": ("STRING", {"default": "http://localhost:8000"}),
+                "collection": ("STRING",),
+                "api_key": ("STRING",),
+                "video": ("VHS_FILENAMES",),
+            },
+            "optional": {
+                "source_image_id": ("INT", {"default": 0, "forceInput": True}),
+                "model_name": ("STRING", {"default": ""}),
+                "use_async": ("BOOLEAN", {"default": True, "forceInput": False}),
+                "keep_order": ("BOOLEAN", {"default": True, "forceInput": False}),
+            },
+        }
+
+    RETURN_TYPES = ("INT",)
+    RETURN_NAMES = ("upload_count",)
+    FUNCTION = "run"
+    CATEGORY = "api/upload"
+    OUTPUT_NODE = True
+
+    def run(
+        self,
+        host: str,
+        collection: str,
+        api_key: str,
+        video: Tuple[bool, List[str]],
+        source_image_id: int = 0,
+        model_name: str = "",
+        use_async: bool = True,
+        keep_order: bool = True,
+    ) -> Tuple[int]:
+        _save_output, file_paths = video
+        if not file_paths:
+            return (0,)
+
+        video_path = file_paths[-1]
+        fname = os.path.basename(video_path)
+        ext = fname.rsplit(".", 1)[-1].lower() if "." in fname else ""
+        if ext not in _VIDEO_CONTENT_TYPES:
+            raise ValueError(
+                f"unsupported video format '.{ext}'; the API accepts {sorted(_VIDEO_CONTENT_TYPES)}"
+            )
+
+        url = f"{host.rstrip('/')}/api/collections/by-name/{collection}/upload/"
+        headers = {"Authorization": f"Bearer {api_key}"}
+        form_data = {}
+        if model_name:
+            form_data["model_name"] = model_name
+        if source_image_id:
+            form_data["source_image_id"] = str(source_image_id)
+
+        if use_async:
+            pool = _ordered_executor if keep_order else _executor
+            pool.submit(self._upload_video, url, headers, video_path, form_data)
+            return (1,)
+
+        return (self._upload_video(url, headers, video_path, form_data),)
+
+    def _upload_video(
+        self,
+        url: str,
+        headers: Dict[str, str],
+        video_path: str,
+        form_data: Optional[Dict[str, str]] = None,
+    ) -> int:
+        fname = os.path.basename(video_path)
+        ext = fname.rsplit(".", 1)[-1].lower() if "." in fname else ""
+        content_type = _VIDEO_CONTENT_TYPES.get(ext, "application/octet-stream")
+        with open(video_path, "rb") as f:
+            buf = io.BytesIO(f.read())
+        buf.seek(0)
+        files = [("files", (fname, buf, content_type))]
+        return self._do_upload(url, headers, files, form_data)
 
     @classmethod
     def IS_CHANGED(cls, *_: Any, **__: Any) -> float:
