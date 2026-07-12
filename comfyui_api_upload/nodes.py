@@ -14,6 +14,7 @@ import cv2
 import numpy as np
 import requests
 import torch
+from PIL import Image
 from torch import Tensor
 
 log = logging.getLogger(__name__)
@@ -102,13 +103,11 @@ class UploadImage:
     def _encode_arrays(self, arrays: List[np.ndarray]) -> list:
         files = []
         for arr in arrays:
-            ok, enc = cv2.imencode(".png", arr[..., ::-1], [cv2.IMWRITE_PNG_COMPRESSION, 2])
-            if not ok:
-                raise RuntimeError("cv2.imencode failed")
-            buf = io.BytesIO(enc.tobytes())
+            buf = io.BytesIO()
+            Image.fromarray(arr).save(buf, format="WEBP", quality=100, method=5)
             buf.seek(0)
-            fname = f"{uuid.uuid4().hex[:12]}.png"
-            files.append(("files", (fname, buf, "image/png")))
+            fname = f"{uuid.uuid4().hex[:12]}.webp"
+            files.append(("files", (fname, buf, "image/webp")))
         return files
 
     def _upload_sequential(
